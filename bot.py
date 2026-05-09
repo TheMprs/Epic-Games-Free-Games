@@ -4,17 +4,18 @@ import logging
 import asyncio
 import httpx
 from datetime import datetime
+from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram import Bot
+from telegram import Bot, Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
 
 # ─── Configuration ────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID        = os.environ["TELEGRAM_CHAT_ID"]
-# Send every Tuesday at 18:00 (Epic usually drops games around 17:00 UTC)
-NOTIFY_DAY     = "tue"
-NOTIFY_HOUR    = 18
-NOTIFY_MINUTE  = 0
+TELEGRAM_TOKEN  = os.environ["TELEGRAM_BOT_TOKEN"]
+SUBSCRIBERS_FILE = Path("subscribers.json")
+NOTIFY_DAY      = "tue"
+NOTIFY_HOUR     = 18
+NOTIFY_MINUTE   = 0
 # ──────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -29,8 +30,20 @@ EPIC_API = (
 )
 
 
-def fetch_free_games() -> list[dict]:
-    """Return a list of currently free games from the Epic Games Store API."""
+# ─── Subscriber storage ───────────────────────────────────────────────────────
+
+def load_subscribers() -> set:
+    if SUBSCRIBERS_FILE.exists():
+        return set(json.loads(SUBSCRIBERS_FILE.read_text()))
+    return set()
+
+def save_subscribers(subs: set):
+    SUBSCRIBERS_FILE.write_text(json.dumps(list(subs)))
+
+
+# ─── Epic Games API ───────────────────────────────────────────────────────────
+
+def fetch_free_games() -> list:
     with httpx.Client(timeout=15) as client:
         r = client.get(EPIC_API)
         r.raise_for_status()
@@ -47,25 +60,21 @@ def fetch_free_games() -> list[dict]:
     for game in elements:
         promotions = game.get("promotions") or {}
         offers = promotions.get("promotionalOffers", [])
-        upcoming = promotions.get("upcomingPromotionalOffers", [])
 
-        # Active free offer
         for promo_group in offers:
             for offer in promo_group.get("promotionalOffers", []):
-                discount = offer.get("discountSetting", {})
-                if discount.get("discountPercentage") == 0:
-                    free.append(_extract(game, offer, upcoming=False))
+                if offer.get("discountSetting", {}).get("discountPercentage") == 0:
+                    free.append(_extract(game, offer))
                     break
 
     return free
 
 
-def _extract(game: dict, offer: dict, upcoming: bool) -> dict:
+def _extract(game: dict, offer: dict) -> dict:
     title = game.get("title", "Unknown")
     description = game.get("description", "")
-    url_slug = None
 
-    # Try to build a store URL
+    url_slug = None
     for mapping in game.get("catalogNs", {}).get("mappings", []):
         if mapping.get("pageType") == "productHome":
             url_slug = mapping.get("pageSlug")
@@ -81,26 +90,17 @@ def _extract(game: dict, offer: dict, upcoming: bool) -> dict:
         if url_slug else "https://store.epicgames.com/en-US/free-games"
     )
 
-    # Thumbnail
-    thumbnail = ""
-    for img in game.get("keyImages", []):
-        if img.get("type") in ("Thumbnail", "DieselGameBox", "OfferImageWide"):
-            thumbnail = img.get("url", "")
-            break
-
     end_date = offer.get("endDate", "")
 
     return {
         "title": title,
         "description": description[:200].rstrip() + ("…" if len(description) > 200 else ""),
         "url": store_url,
-        "thumbnail": thumbnail,
         "end_date": end_date,
-        "upcoming": upcoming,
     }
 
 
-def format_message(games: list[dict]) -> str:
+def format_message(games: list) -> str:
     if not games:
         return (
             "🎮 <b>Epic Games Free Games</b>\n\n"
@@ -126,35 +126,93 @@ def format_message(games: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def send_notification():
-    log.info("Fetching free games…")
+# ─── Command handlers ─────────────────────────────────────────────────────────
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    subs = load_subscribers()
+
+    if chat_id in subs:
+        await update.message.reply_text("You're already subscribed! 🎮 I'll notify you every Tuesday.")
+        return
+
+    subs.add(chat_id)
+    save_subscribers(subs)
+    log.info("New subscriber: %s", chat_id)
+
+    await update.message.reply_text(
+        "✅ Subscribed! You'll get notified every Tuesday when Epic Games drops new free games.\n\n"
+        "Send /end at any time to unsubscribe.\n"
+        "Send /games to check the current free games right now!"
+    )
+
+
+async def cmd_end(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    subs = load_subscribers()
+
+    if chat_id not in subs:
+        await update.message.reply_text("You're not subscribed — send /start to subscribe!")
+        return
+
+    subs.discard(chat_id)
+    save_subscribers(subs)
+    log.info("Unsubscribed: %s", chat_id)
+
+    await update.message.reply_text("👋 Unsubscribed. You won't receive notifications anymore.\nSend /start to re-subscribe anytime.")
+
+
+async def cmd_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check current free games on demand."""
+    await update.message.reply_text("Fetching current free games… 🔍")
     try:
         games = fetch_free_games()
-        log.info("Found %d free game(s): %s", len(games), [g["title"] for g in games])
+    except Exception as e:
+        await update.message.reply_text(f"Failed to fetch games: {e}")
+        return
+    await update.message.reply_text(format_message(games), parse_mode=ParseMode.HTML)
+
+
+# ─── Weekly notification ──────────────────────────────────────────────────────
+
+async def send_weekly_notification(app: Application):
+    subs = load_subscribers()
+    if not subs:
+        log.info("No subscribers, skipping notification.")
+        return
+
+    log.info("Sending weekly notification to %d subscriber(s)…", len(subs))
+    try:
+        games = fetch_free_games()
     except Exception as e:
         log.error("Failed to fetch games: %s", e)
-        games = []
+        return
 
     message = format_message(games)
-    bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.send_message(
-        chat_id=CHAT_ID,
-        text=message,
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=False,
-    )
-    log.info("Notification sent to chat %s", CHAT_ID)
+    for chat_id in list(subs):
+        try:
+            await app.bot.send_message(chat_id=chat_id, text=message, parse_mode=ParseMode.HTML)
+            log.info("Notified %s", chat_id)
+        except Exception as e:
+            log.warning("Failed to notify %s: %s — removing from subscribers", chat_id, e)
+            subs.discard(chat_id)
+
+    save_subscribers(subs)
 
 
-async def main():
-    log.info("Starting Epic Games Telegram Bot…")
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
-    # Send once immediately on startup so you can verify it works
-    await send_notification()
+def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("end", cmd_end))
+    app.add_handler(CommandHandler("games", cmd_games))
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
-        send_notification,
+        send_weekly_notification,
+        args=[app],
         trigger="cron",
         day_of_week=NOTIFY_DAY,
         hour=NOTIFY_HOUR,
@@ -163,14 +221,12 @@ async def main():
     )
     scheduler.start()
     log.info(
-        "Scheduler running — will notify every %s at %02d:%02d UTC",
-        NOTIFY_DAY.upper(), NOTIFY_HOUR, NOTIFY_MINUTE,
+        "Bot started — polling for commands. Weekly notification: every %s at %02d:%02d UTC",
+        NOTIFY_DAY.upper(), NOTIFY_HOUR, NOTIFY_MINUTE
     )
 
-    # Keep the event loop alive
-    while True:
-        await asyncio.sleep(3600)
+    app.run_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
