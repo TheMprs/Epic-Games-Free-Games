@@ -1,12 +1,10 @@
 import os
 import json
 import logging
-import asyncio
 import httpx
-from datetime import datetime
+from datetime import datetime, time as dtime, timezone
 from pathlib import Path
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram import Bot, Update
+from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
 
@@ -175,7 +173,7 @@ async def cmd_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─── Weekly notification ──────────────────────────────────────────────────────
 
-async def send_weekly_notification(app: Application):
+async def send_weekly_notification(context: ContextTypes.DEFAULT_TYPE):
     subs = load_subscribers()
     if not subs:
         log.info("No subscribers, skipping notification.")
@@ -191,7 +189,7 @@ async def send_weekly_notification(app: Application):
     message = format_message(games)
     for chat_id in list(subs):
         try:
-            await app.bot.send_message(chat_id=chat_id, text=message, parse_mode=ParseMode.HTML)
+            await context.bot.send_message(chat_id=chat_id, text=message, parse_mode=ParseMode.HTML)
             log.info("Notified %s", chat_id)
         except Exception as e:
             log.warning("Failed to notify %s: %s — removing from subscribers", chat_id, e)
@@ -209,17 +207,11 @@ def main():
     app.add_handler(CommandHandler("end", cmd_end))
     app.add_handler(CommandHandler("games", cmd_games))
 
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
+    app.job_queue.run_daily(
         send_weekly_notification,
-        args=[app],
-        trigger="cron",
-        day_of_week=NOTIFY_DAY,
-        hour=NOTIFY_HOUR,
-        minute=NOTIFY_MINUTE,
-        timezone="UTC",
+        time=dtime(hour=NOTIFY_HOUR, minute=NOTIFY_MINUTE, tzinfo=timezone.utc),
+        days=(1,),  # 0=Mon, 1=Tue, ..., 6=Sun
     )
-    scheduler.start()
     log.info(
         "Bot started — polling for commands. Weekly notification: every %s at %02d:%02d UTC",
         NOTIFY_DAY.upper(), NOTIFY_HOUR, NOTIFY_MINUTE
