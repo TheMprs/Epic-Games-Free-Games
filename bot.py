@@ -201,14 +201,15 @@ async def send_weekly_notification(context: ContextTypes.DEFAULT_TYPE):
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-async def post_init(app: Application):
-    jobs = app.job_queue.jobs()
-    for job in jobs:
-        log.info("Next scheduled notification: %s", job.next_run_time)
+async def log_schedule(context: ContextTypes.DEFAULT_TYPE):
+    for job in context.job_queue.jobs():
+        if job.name == "send_weekly_notification":
+            log.info("Next scheduled notification: %s", job.next_run_time)
+            break
 
 
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("end", cmd_end))
@@ -218,7 +219,9 @@ def main():
         send_weekly_notification,
         time=dtime(hour=NOTIFY_HOUR, minute=NOTIFY_MINUTE, tzinfo=timezone.utc),
         days=(1,),  # 0=Mon, 1=Tue, ..., 6=Sun
+        name="send_weekly_notification",
     )
+    app.job_queue.run_once(log_schedule, when=2)
     log.info(
         "Bot started — polling for commands. Weekly notification: every %s at %02d:%02d UTC",
         NOTIFY_DAY.upper(), NOTIFY_HOUR, NOTIFY_MINUTE
