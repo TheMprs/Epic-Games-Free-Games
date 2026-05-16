@@ -204,7 +204,7 @@ async def send_weekly_notification(context: ContextTypes.DEFAULT_TYPE):
 
 async def log_schedule(context: ContextTypes.DEFAULT_TYPE):
     for job in context.job_queue.jobs():
-        if job.name == "send_weekly_notification":
+        if job.callback == send_weekly_notification:
             log.info("Next scheduled notification: %s", job.next_run_time)
             break
 
