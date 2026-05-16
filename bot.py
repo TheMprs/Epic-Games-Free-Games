@@ -11,15 +11,16 @@ from telegram.constants import ParseMode
 # ─── Configuration ────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_BOT_TOKEN"]
 SUBSCRIBERS_FILE = Path("subscribers.json")
-NOTIFY_DAY      = "tue"
-NOTIFY_HOUR     = 18
-NOTIFY_MINUTE   = 0
+NOTIFY_DAY      = "thu"
+NOTIFY_HOUR     = 15
+NOTIFY_MINUTE   = 57
 # ──────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     level=logging.INFO,
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 EPIC_API = (
@@ -218,7 +219,7 @@ def main():
     app.job_queue.run_daily(
         send_weekly_notification,
         time=dtime(hour=NOTIFY_HOUR, minute=NOTIFY_MINUTE, tzinfo=timezone.utc),
-        days=(1,),  # 0=Mon, 1=Tue, ..., 6=Sun
+        days=(4,),  # 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
         name="send_weekly_notification",
     )
     app.job_queue.run_once(log_schedule, when=2)
