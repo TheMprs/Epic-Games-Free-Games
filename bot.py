@@ -171,6 +171,12 @@ async def cmd_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(format_message(games), parse_mode=ParseMode.HTML)
 
 
+async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually trigger the weekly notification for testing."""
+    await update.message.reply_text("Triggering weekly notification… 🔍")
+    await send_weekly_notification(context)
+
+
 # ─── Weekly notification ──────────────────────────────────────────────────────
 
 async def send_weekly_notification(context: ContextTypes.DEFAULT_TYPE):
@@ -206,6 +212,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("end", cmd_end))
     app.add_handler(CommandHandler("games", cmd_games))
+    app.add_handler(CommandHandler("test", cmd_test))
 
     app.job_queue.run_daily(
         send_weekly_notification,
