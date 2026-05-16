@@ -206,8 +206,14 @@ async def send_weekly_notification(context: ContextTypes.DEFAULT_TYPE):
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+async def post_init(app: Application):
+    jobs = app.job_queue.jobs()
+    for job in jobs:
+        log.info("Next scheduled notification: %s", job.next_t)
+
+
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("end", cmd_end))
