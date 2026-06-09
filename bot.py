@@ -16,8 +16,12 @@ SUBSCRIBERS_FILE = DATA_DIR / "subscribers.json"
 NOTIFY_DAY      = "thu"
 NOTIFY_HOUR     = 15
 NOTIFY_MINUTE   = 57
-# Admin chat IDs allowed to run /notify (add your chat ID here)
-ADMIN_IDS: set[int] = set()
+
+# Permanent subscribers from env var — survive restarts even without a volume.
+# Set SUBSCRIBER_CHAT_IDS=123456,789012 in Railway Variables.
+_env_ids = os.environ.get("SUBSCRIBER_CHAT_IDS", "")
+PERMANENT_IDS: set[int] = {int(x) for x in _env_ids.split(",") if x.strip()}
+ADMIN_IDS: set[int] = PERMANENT_IDS
 # ──────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -208,7 +212,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── Weekly notification ──────────────────────────────────────────────────────
 
 async def send_weekly_notification(context: ContextTypes.DEFAULT_TYPE):
-    subs = load_subscribers()
+    subs = load_subscribers() | PERMANENT_IDS
     if not subs:
         log.info("No subscribers, skipping notification.")
         return
@@ -253,7 +257,7 @@ def main():
     app.job_queue.run_daily(
         send_weekly_notification,
         time=dtime(hour=NOTIFY_HOUR, minute=NOTIFY_MINUTE, tzinfo=timezone.utc),
-        days=(3,),  # datetime.weekday(): 0=Mon 1=Tue 2=Wed 3=Thu 4=Fri 5=Sat 6=Sun
+        days=(4,),  # PTB convention: 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat
         name="send_weekly_notification",
     )
     app.job_queue.run_once(log_schedule, when=2)
@@ -261,6 +265,7 @@ def main():
         "Bot started — polling for commands. Weekly notification: every %s at %02d:%02d UTC",
         NOTIFY_DAY.upper(), NOTIFY_HOUR, NOTIFY_MINUTE
     )
+    log.info("Permanent subscriber IDs from env: %s", PERMANENT_IDS or "none — set SUBSCRIBER_CHAT_IDS")
 
     app.run_polling()
 
