@@ -10,10 +10,14 @@ from telegram.constants import ParseMode
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_BOT_TOKEN"]
-SUBSCRIBERS_FILE = Path("subscribers.json")
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+SUBSCRIBERS_FILE = DATA_DIR / "subscribers.json"
 NOTIFY_DAY      = "thu"
 NOTIFY_HOUR     = 15
 NOTIFY_MINUTE   = 57
+# Admin chat IDs allowed to run /notify (add your chat ID here)
+ADMIN_IDS: set[int] = set()
 # ──────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -132,7 +136,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subs = load_subscribers()
 
     if chat_id in subs:
-        await update.message.reply_text("You're already subscribed! 🎮 I'll notify you every Tuesday.")
+        await update.message.reply_text("You're already subscribed! 🎮 I'll notify you every Thursday.")
         return
 
     subs.add(chat_id)
@@ -140,7 +144,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("New subscriber: %s", chat_id)
 
     await update.message.reply_text(
-        "✅ Subscribed! You'll get notified every Tuesday when Epic Games drops new free games.\n\n"
+        "✅ Subscribed! You'll get notified every Thursday when Epic Games drops new free games.\n\n"
         "Send /end at any time to unsubscribe.\n"
         "Send /games to check the current free games right now!"
     )
@@ -170,6 +174,34 @@ async def cmd_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Failed to fetch games: {e}")
         return
     await update.message.reply_text(format_message(games), parse_mode=ParseMode.HTML)
+
+
+async def cmd_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually trigger the weekly notification (admin only)."""
+    chat_id = update.effective_chat.id
+    if ADMIN_IDS and chat_id not in ADMIN_IDS:
+        await update.message.reply_text("Not authorized.")
+        return
+    await update.message.reply_text("Triggering weekly notification now…")
+    await send_weekly_notification(context)
+    await update.message.reply_text("Done.")
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show scheduler status and subscriber count."""
+    chat_id = update.effective_chat.id
+    if ADMIN_IDS and chat_id not in ADMIN_IDS:
+        await update.message.reply_text("Not authorized.")
+        return
+    subs = load_subscribers()
+    next_run = "unknown"
+    for job in context.job_queue.jobs():
+        if job.callback == send_weekly_notification:
+            next_run = str(job.next_run_time)
+            break
+    await update.message.reply_text(
+        f"Subscribers: {len(subs)}\nNext notification: {next_run}"
+    )
 
 
 
@@ -215,11 +247,13 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("end", cmd_end))
     app.add_handler(CommandHandler("games", cmd_games))
+    app.add_handler(CommandHandler("notify", cmd_notify))
+    app.add_handler(CommandHandler("status", cmd_status))
 
     app.job_queue.run_daily(
         send_weekly_notification,
         time=dtime(hour=NOTIFY_HOUR, minute=NOTIFY_MINUTE, tzinfo=timezone.utc),
-        days=(4,),  # 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+        days=(3,),  # datetime.weekday(): 0=Mon 1=Tue 2=Wed 3=Thu 4=Fri 5=Sat 6=Sun
         name="send_weekly_notification",
     )
     app.job_queue.run_once(log_schedule, when=2)
