@@ -21,7 +21,10 @@ NOTIFY_MINUTE   = 57
 # Set SUBSCRIBER_CHAT_IDS=123456,789012 in Railway Variables.
 _env_ids = os.environ.get("SUBSCRIBER_CHAT_IDS", "")
 PERMANENT_IDS: set[int] = {int(x) for x in _env_ids.split(",") if x.strip()}
-ADMIN_IDS: set[int] = PERMANENT_IDS
+_admin_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+ADMIN_IDS: set[int] = {int(_admin_id)} if _admin_id.strip() else set()
+WEBHOOK_HOST = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+PORT = int(os.environ.get("PORT", 8080))
 # ──────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -180,17 +183,6 @@ async def cmd_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(format_message(games), parse_mode=ParseMode.HTML)
 
 
-async def cmd_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manually trigger the weekly notification (admin only)."""
-    chat_id = update.effective_chat.id
-    if ADMIN_IDS and chat_id not in ADMIN_IDS:
-        await update.message.reply_text("Not authorized.")
-        return
-    await update.message.reply_text("Triggering weekly notification now…")
-    await send_weekly_notification(context)
-    await update.message.reply_text("Done.")
-
-
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show scheduler status and subscriber count."""
     chat_id = update.effective_chat.id
@@ -251,7 +243,6 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("end", cmd_end))
     app.add_handler(CommandHandler("games", cmd_games))
-    app.add_handler(CommandHandler("notify", cmd_notify))
     app.add_handler(CommandHandler("status", cmd_status))
 
     app.job_queue.run_daily(
@@ -267,7 +258,15 @@ def main():
     )
     log.info("Permanent subscriber IDs from env: %s", PERMANENT_IDS or "none — set SUBSCRIBER_CHAT_IDS")
 
-    app.run_polling()
+    if WEBHOOK_HOST:
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=TELEGRAM_TOKEN,
+            webhook_url=f"https://{WEBHOOK_HOST}/{TELEGRAM_TOKEN}",
+        )
+    else:
+        app.run_polling()
 
 
 if __name__ == "__main__":
